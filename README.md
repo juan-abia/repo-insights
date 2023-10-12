@@ -1,2 +1,2 @@
-# repo-stats
+# repo-insights
 Tool to get insights out of git data from repos. Hotspots, knowledge silos...

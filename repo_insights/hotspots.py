@@ -1,120 +1,174 @@
+from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
-import plotly.express as px
-import pandas as pd
-
-from prettytable import PrettyTable
-import subprocess
+import collections
 import os
-import time
+import subprocess
+
+import pandas as pd
+import plotly.express as px
 import yaml
 
 
-def read_config() -> dict:
-    with open(Path("config/hotspots.yaml")) as f:
-        config = yaml.safe_load(f)
-    return config
+class ComplexityMode(Enum):
+    NUMBER_OF_LINES = "Number of lines"
+    LEFT_WHITE_SPACES = "Left white spaces"
 
 
-def get_file_lines(file_path) -> int:
-    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
-        return len(file.readlines())
+class ChangesMode(Enum):
+    NUMBER_OF_COMMITS = "Number of commits"
+    TOTAL_LINES_CHANGED = "Total lines changed in all commits"
 
 
-def get_modification_frequency(file_path) -> int:
-    result = subprocess.run(
-        ['git', 'log', '--pretty=format:', '--name-only', f'--since="1 year ago"', file_path],
-        text=True,
-        capture_output=True
-    )
-    return len([line for line in result.stdout.split('\n') if line])
+class RepoAnalyzer:
+    def __init__(self,
+                 repo_path: str,
+                 complexity_method: ComplexityMode = ComplexityMode.NUMBER_OF_LINES,
+                 changes_method: ChangesMode = ChangesMode.NUMBER_OF_COMMITS,
+                 months_back: int = -1):
 
+        self.repo_path = repo_path
+        self.complexity_method = complexity_method
+        self.changes_method = changes_method
+        self.months_back = months_back
 
-def analyze_repository(repo_path):
-    config = read_config()
-    exclude_dirs = config["exclude_dirs"]
-    exclude_files = config["exclude_files"]
-    os.chdir(repo_path)
-    data = []
+        self.config = self.read_config()
+        self.data = pd.DataFrame()
 
-    complexity_time = 0
-    mod_freq_time = 0
+    @staticmethod
+    def read_config(config_path: str = "config/hotspots.yaml") -> dict:
+        with open(Path(config_path)) as f:
+            config = yaml.safe_load(f)
+        return config
 
-    for root, dirs, files in os.walk(repo_path):
-        # Prevent os.walk from traversing into excluded directories
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+    def get_files(self) -> None:
+        file_paths = []
+        for root, dirs, files in os.walk(self.repo_path):
+            dirs[:] = [d for d in dirs if d not in self.config["exclude_dirs"]]
+            for file in files:
+                if file in self.config["exclude_files"]:
+                    continue
+                file_paths.append(Path(root) / file)
+        self.data = pd.DataFrame(file_paths, columns=["file_path"])
 
-        for file in files:
-            if file in exclude_files:
-                continue
+    def get_complexity(self) -> None:
+        match self.complexity_method:
+            case ComplexityMode.NUMBER_OF_LINES:
+                self._get_number_of_lines()
+            case ComplexityMode.LEFT_WHITE_SPACES:
+                self._get_left_white_spaces()
+            case _:
+                raise ValueError(f"ERROR: Mode {self.complexity_method} does not apply to complexity")
 
-            file_path = os.path.join(root, file)
+    def get_changes(self) -> None:
+        match self.changes_method:
+            case ChangesMode.NUMBER_OF_COMMITS:
+                self._get_number_of_commits()
+            case ChangesMode.TOTAL_LINES_CHANGED:
+                self._get_total_lines_changed()
+            case _:
+                raise ValueError(f"ERROR: Mode {self.changes_method} does not apply to changes")
 
-            # Measure time taken to calculate complexity
-            start_time = time.time()
-            complexity = get_file_lines(file_path)
-            complexity_time += time.time() - start_time
+    def _get_number_of_lines(self) -> None:
+        self.data["complexity"] = self.data['file_path'].apply(lambda x: self._count_file_lines(x))
 
-            # Measure time taken to calculate modification frequency
-            start_time = time.time()
-            mod_freq = get_modification_frequency(file_path)
-            mod_freq_time += time.time() - start_time
+    @staticmethod
+    def _count_file_lines(file_path) -> int:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+            return len(file.readlines())
 
-            data.append((file_path, complexity, mod_freq))
+    def _get_left_white_spaces(self) -> None:
+        self.data["complexity"] = self.data['file_path'].apply(lambda x: self._count_file_left_white_spaces(x))
 
-    print(f"Total time for complexity calculations: {complexity_time:.2f} seconds")
-    print(f"Total time for modification frequency calculations: {mod_freq_time:.2f} seconds")
+    @staticmethod
+    def _count_file_left_white_spaces(file_path: str) -> int:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+            total_white_spaces = 0
+            for line in file:
+                stripped_line = line.lstrip()
+                if stripped_line and not stripped_line.startswith(('#', '//', '/*', '*')):
+                    total_white_spaces += len(line) - len(stripped_line)
+        return total_white_spaces
 
-    return data
+    def _get_number_of_commits(self) -> None:
+        command = self._get_number_of_commits_command()
+        output = self._run_command(command)
+        files = output.split('\n')
+        counts = collections.Counter(files)
+        del counts['']  # Remove empty string key which comes from extra newlines
 
+        # Map the commit counts to the 'changes' column in the data DataFrame
+        self.data['changes'] = self.data['file_path'].apply(lambda x: counts[os.path.relpath(x, start=self.repo_path)])
 
-def plot_data(data):
-    # Convert data to a DataFrame for compatibility with Plotly Express
-    df = pd.DataFrame(data, columns=["File", "Complexity", "Modification Frequency"])
+    def _get_number_of_commits_command(self) -> list:
+        command = [
+            'git', '-C', self.repo_path,
+            'log',
+            '--pretty=format:', '--name-only', '--', '.'
+        ]
 
-    df['Shortened File'] = df['File'].apply(lambda x: os.path.relpath(x, start=repo_path))
+        if self.months_back != -1:
+            since_date = (datetime.now() - timedelta(days=30 * self.months_back)).strftime('%Y-%m-%d')
+            command.insert(4, f'--since={since_date}')
 
-    # Create the scatter plot using Plotly Express
-    fig = px.scatter(
-        df,
-        x='Complexity',
-        y='Modification Frequency',
-        hover_name='Shortened File',  # This will show the file name when you hover over a point
-        hover_data={'Complexity': False, 'Modification Frequency': False},
-        title='Complexity vs Modification Frequency',
-        labels={
-            "Complexity": "Complexity (Lines of Code)",
-            "Modification Frequency": "Modification Frequency (Past Year)"
-        }
-    )
+        return command
 
-    # Show the plot
-    fig.show()
+    def _get_total_lines_changed(self) -> None:
+        self.data["changes"] = self.data['file_path'].apply(lambda x: self._count_file_total_lines_changed(x))
 
+    def _count_file_total_lines_changed(self, file_path: str) -> int:
+        rel_path = os.path.relpath(file_path, start=self.repo_path)
+        command = self._get_lines_changed_command(rel_path)
+        output = self._run_command(command)
+        changes = [line.split('\t')[:2] for line in output.split('\n') if line]
+        total_changes = sum(int(additions) + int(deletions) for additions, deletions in changes)
+        return total_changes
 
-def print_most_complex_and_modified(data):
-    # Sort data based on complexity and modification frequency
-    sorted_by_complexity = sorted(data, key=lambda x: x[1], reverse=True)[:5]
-    sorted_by_mod_freq = sorted(data, key=lambda x: x[2], reverse=True)[:5]
+    def _get_lines_changed_command(self, rel_path: str) -> list:
+        command = [
+            'git', '-C', self.repo_path,
+            'log',
+            '--numstat',
+            '--pretty=format:',
+            '--', rel_path
+        ]
 
-    # Create a table for the most complex files
-    complexity_table = PrettyTable()
-    complexity_table.field_names = ["File", "Complexity"]
-    for item in sorted_by_complexity:
-        complexity_table.add_row([item[0], item[1]])
+        if self.months_back != -1:
+            since_date = (datetime.now() - timedelta(days=30 * self.months_back)).strftime('%Y-%m-%d')
+            command.insert(4, f'--since={since_date}')
 
-    # Create a table for the most modified files
-    mod_freq_table = PrettyTable()
-    mod_freq_table.field_names = ["File", "Modification Frequency"]
-    for item in sorted_by_mod_freq:
-        mod_freq_table.add_row([item[0], item[2]])
+        return command
 
-    # Print the tables
-    print(f"Top 5 Most Complex Files:\n{complexity_table}")
-    print(f"\nTop 5 Most Modified Files:\n{mod_freq_table}")
+    @staticmethod
+    def _run_command(command: list) -> str:
+        try:
+            return subprocess.check_output(command).decode('utf-8').strip()
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Command failed with error: {e}")
+
+    def plot_data(self) -> None:
+        self.data['file'] = self.data['file_path'].apply(lambda x: str(Path(x).relative_to(self.repo_path)))
+        fig = px.scatter(
+            self.data,
+            x='changes',
+            y='complexity',
+            hover_name='file',
+            hover_data={'complexity': False, 'changes': False},
+            title='Complexity vs Changes',
+            labels={
+                "complexity": f"Complexity - {self.complexity_method.value}",
+                "changes": f"Changes - {self.changes_method.value}"
+            }
+        )
+        fig.show()
 
 
 if __name__ == "__main__":
     repo_path = "/Users/jabia/Git/aily-ai-fin"
-    data = analyze_repository(repo_path)
-    plot_data(data)
-    print_most_complex_and_modified(data)
+    analyzer = RepoAnalyzer(repo_path,
+                            complexity_method=ComplexityMode.NUMBER_OF_LINES,
+                            changes_method=ChangesMode.NUMBER_OF_COMMITS)
+    analyzer.get_files()
+    analyzer.get_complexity()
+    analyzer.get_changes()
+    analyzer.plot_data()

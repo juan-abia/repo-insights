@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "repo-insights"
+version = "0.1.0"
+description = "Tool to get insights out of git data from repos"
+authors = ["Juan Abia <juan.abia999@gmail.com>"]
+readme = "README.md"
+packages = [{include = "repo_insights"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+matplotlib = "^3.8.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

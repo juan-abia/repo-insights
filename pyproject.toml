@@ -7,8 +7,11 @@ readme = "README.md"
 packages = [{include = "repo_insights"}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
-matplotlib = "^3.8.0"
+python = ">=3.9,<3.13"
+pyyaml = "^6.0.1"
+prettytable = "^3.9.0"
+plotly = "^5.17.0"
+pandas = "^2.1.1"
 
 
 [build-system]

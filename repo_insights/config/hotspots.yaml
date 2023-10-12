@@ -1,0 +1,10 @@
+exclude_dirs:
+  - ".pytest_cache"
+  - ".tox"
+  - ".pytest_cache"
+  - ".idea"
+  - ".git"
+  - "__pycache__"
+
+exclude_files:
+  - "poetry.lock"

@@ -1,9 +1,9 @@
-from datetime import datetime, timedelta
-from enum import Enum
-from pathlib import Path
 import collections
 import os
 import subprocess
+from datetime import datetime, timedelta
+from enum import Enum
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -20,7 +20,7 @@ class ChangesMode(Enum):
     TOTAL_LINES_CHANGED = "Total lines changed in all commits"
 
 
-class RepoAnalyzer:
+class Hotspots:
     def __init__(self,
                  repo_path: str,
                  complexity_method: ComplexityMode = ComplexityMode.NUMBER_OF_LINES,
@@ -146,18 +146,47 @@ class RepoAnalyzer:
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Command failed with error: {e}")
 
+    def get_color(self) -> None:
+        def color_for_file(file_path: str) -> str:
+            file_path_str = str(file_path)
+            if file_path_str.endswith('.yaml'):
+                return 'red'
+            elif file_path_str.endswith('.py'):
+                return 'blue'
+            else:
+                return 'grey'
+
+        def legend_label(file_path: str) -> str:
+            file_path_str = str(file_path)
+            if file_path_str.endswith('.yaml'):
+                return '.yaml'
+            elif file_path_str.endswith('.py'):
+                return '.py'
+            else:
+                return 'other'
+
+        self.data['color'] = self.data['file_path'].apply(color_for_file)
+        self.data['legend'] = self.data['file_path'].apply(legend_label)
+
     def plot_data(self) -> None:
+        self.get_color()
         self.data['file'] = self.data['file_path'].apply(lambda x: str(Path(x).relative_to(self.repo_path)))
         fig = px.scatter(
             self.data,
             x='changes',
             y='complexity',
             hover_name='file',
-            hover_data={'complexity': False, 'changes': False},
+            color='legend',  # Use the legend_label column for color
+            hover_data={'complexity': False, 'changes': False, 'legend': False},
             title='Complexity vs Changes',
             labels={
                 "complexity": f"Complexity - {self.complexity_method.value}",
                 "changes": f"Changes - {self.changes_method.value}"
+            },
+            color_discrete_map={
+                '.yaml': 'red',
+                '.py': 'blue',
+                'other': 'grey'
             }
         )
         fig.show()
@@ -165,10 +194,10 @@ class RepoAnalyzer:
 
 if __name__ == "__main__":
     repo_path = "/Users/jabia/Git/aily-ai-fin"
-    analyzer = RepoAnalyzer(repo_path,
-                            complexity_method=ComplexityMode.NUMBER_OF_LINES,
-                            changes_method=ChangesMode.NUMBER_OF_COMMITS)
-    analyzer.get_files()
-    analyzer.get_complexity()
-    analyzer.get_changes()
-    analyzer.plot_data()
+    hotspots = Hotspots(repo_path,
+                        complexity_method=ComplexityMode.LEFT_WHITE_SPACES,
+                        changes_method=ChangesMode.TOTAL_LINES_CHANGED)
+    hotspots.get_files()
+    hotspots.get_complexity()
+    hotspots.get_changes()
+    hotspots.plot_data()

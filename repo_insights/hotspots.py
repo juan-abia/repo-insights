@@ -22,18 +22,33 @@ class ChangesMode(Enum):
 
 class Hotspots:
     def __init__(self,
-                 repo_path: str,
+                 analyze_path: str,
                  complexity_method: ComplexityMode = ComplexityMode.NUMBER_OF_LINES,
                  changes_method: ChangesMode = ChangesMode.NUMBER_OF_COMMITS,
-                 months_back: int = -1):
+                 months_back: int = -1,
+                 depth_level: int = -1):
 
-        self.repo_path = repo_path
+        self.analyze_path = analyze_path
+        self.repo_path = self.find_repo_path()
         self.complexity_method = complexity_method
         self.changes_method = changes_method
         self.months_back = months_back
+        self.depth_level = depth_level
 
         self.config = self.read_config()
         self.data = pd.DataFrame()
+
+    def find_repo_path(self) -> str | None:
+        original_cwd = os.getcwd()
+        os.chdir(self.analyze_path)
+        while True:
+            if ".git" in os.listdir():
+                repo_path = os.getcwd()
+                os.chdir(original_cwd)
+                return repo_path
+            elif os.getcwd() == "/":
+                raise SystemError("The provided path does not correspond to a git repository")
+            os.chdir("..")
 
     @staticmethod
     def read_config(config_path: str = "config/hotspots.yaml") -> dict:
@@ -43,14 +58,23 @@ class Hotspots:
 
     def get_files(self) -> None:
         file_paths = []
-        for root, dirs, files in os.walk(self.repo_path):
+        analyze_path_parts = len(Path(self.analyze_path).parts)
+        for root, dirs, files in os.walk(self.analyze_path):
             dirs[:] = [d for d in dirs if d not in self.config["exclude_dirs"]]
+
             for file in files:
                 if file in self.config["exclude_files"]:
                     continue
-                file_paths.append(Path(root) / file)
+                file_path = Path(root) / file
+                file_paths.append(file_path)
         self.data = pd.DataFrame(file_paths, columns=["file_path"])
 
+    def wrangle_data_by_depth_level(self) -> None:
+        if self.depth_level < 0:
+            return
+        # Group every row by the depth level. If it's above the depth level, remove it
+        # if it's below, group them in the folder
+        # elif len(file_path.parts) <= analyze_path_parts + self.depth_level:
     def get_complexity(self) -> None:
         match self.complexity_method:
             case ComplexityMode.NUMBER_OF_LINES:
@@ -169,6 +193,13 @@ class Hotspots:
         self.data['legend'] = self.data['file_path'].apply(legend_label)
 
     def plot_data(self) -> None:
+        if "changes" not in self.data.columns:
+            self.get_changes()
+        if "complexity" not in self.data.columns:
+            self.get_complexity()
+
+        self.wrangle_data_by_depth_level()
+
         self.get_color()
         self.data['file'] = self.data['file_path'].apply(lambda x: str(Path(x).relative_to(self.repo_path)))
         fig = px.scatter(
@@ -193,11 +224,10 @@ class Hotspots:
 
 
 if __name__ == "__main__":
-    repo_path = "/Users/jabia/Git/aily-ai-fin"
-    hotspots = Hotspots(repo_path,
+    path = "/Users/jabia/Git/aily-ai-fin/tests"
+    hotspots = Hotspots(path,
                         complexity_method=ComplexityMode.LEFT_WHITE_SPACES,
-                        changes_method=ChangesMode.TOTAL_LINES_CHANGED)
+                        changes_method=ChangesMode.TOTAL_LINES_CHANGED,
+                        depth_level=1)
     hotspots.get_files()
-    hotspots.get_complexity()
-    hotspots.get_changes()
     hotspots.plot_data()

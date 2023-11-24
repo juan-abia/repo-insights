@@ -69,12 +69,45 @@ class Hotspots:
                 file_paths.append(file_path)
         self.data = pd.DataFrame(file_paths, columns=["file_path"])
 
-    def wrangle_data_by_depth_level(self) -> None:
+    def wrangle_data_by_depth_level(self) -> pd.DataFrame:
         if self.depth_level < 0:
-            return
-        # Group every row by the depth level. If it's above the depth level, remove it
-        # if it's below, group them in the folder
-        # elif len(file_path.parts) <= analyze_path_parts + self.depth_level:
+            return self.data
+
+        # Normalize analyze_path
+        analyze_path = Path(self.analyze_path).resolve()
+
+        # Function to determine the aggregation level for a given path
+        def aggregation_level(path):
+            path = Path(path).resolve()
+            relative_path = path.relative_to(analyze_path)
+            if len(relative_path.parts) > self.depth_level:
+                # If the file is deeper than the specified depth level, return the directory up to the depth level with a slash
+                dir_path = Path(analyze_path, *relative_path.parts[:self.depth_level])
+                return f"{str(dir_path)}/"  # Append slash to indicate directory
+            elif len(relative_path.parts) == self.depth_level:
+                # If the file is at the exact depth level, check if it is a directory and append a slash if it is
+                if path.is_dir():
+                    return f"{str(path)}/"  # Append slash to indicate directory
+                else:
+                    return str(path)  # Return file path as is
+            else:
+                # Otherwise, it's out of our depth scope
+                return None
+
+        # Apply the aggregation_level function to each file path
+        self.data['aggregation_level'] = self.data['file_path'].apply(aggregation_level)
+
+        # Remove rows that are out of our depth scope
+        self.data = self.data[self.data['aggregation_level'].notnull()]
+
+        # Group by the new aggregation_level and sum the changes and complexity
+        df_grouped = self.data.groupby('aggregation_level').agg({'changes': 'sum', 'complexity': 'sum'}).reset_index()
+
+        # Rename columns to match the desired output
+        df_grouped.columns = ['file_path', 'changes', 'complexity']
+
+        return df_grouped
+
     def get_complexity(self) -> None:
         match self.complexity_method:
             case ComplexityMode.NUMBER_OF_LINES:
@@ -177,6 +210,8 @@ class Hotspots:
                 return 'red'
             elif file_path_str.endswith('.py'):
                 return 'blue'
+            elif file_path_str.endswith('/'):
+                return 'lime'
             else:
                 return 'grey'
 
@@ -186,6 +221,8 @@ class Hotspots:
                 return '.yaml'
             elif file_path_str.endswith('.py'):
                 return '.py'
+            elif file_path_str.endswith('/'):
+                return 'dir'
             else:
                 return 'other'
 
@@ -198,7 +235,7 @@ class Hotspots:
         if "complexity" not in self.data.columns:
             self.get_complexity()
 
-        self.wrangle_data_by_depth_level()
+        self.data = self.wrangle_data_by_depth_level()
 
         self.get_color()
         self.data['file'] = self.data['file_path'].apply(lambda x: str(Path(x).relative_to(self.repo_path)))
@@ -217,6 +254,7 @@ class Hotspots:
             color_discrete_map={
                 '.yaml': 'red',
                 '.py': 'blue',
+                'dir': 'lime',
                 'other': 'grey'
             }
         )
@@ -224,7 +262,7 @@ class Hotspots:
 
 
 if __name__ == "__main__":
-    path = "/Users/jabia/Git/aily-ai-fin/tests"
+    path = "/Users/jabia/Git/aily-ai-fin/aily_ai_fin"
     hotspots = Hotspots(path,
                         complexity_method=ComplexityMode.LEFT_WHITE_SPACES,
                         changes_method=ChangesMode.TOTAL_LINES_CHANGED,
